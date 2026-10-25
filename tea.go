@@ -548,6 +548,9 @@ type Program struct {
 	// rendererDone is used to stop the renderer.
 	rendererDone chan struct{}
 
+	// renderWake restarts the frame ticker once it has idled out.
+	renderWake chan struct{}
+
 	// Initial window size. Mainly used for testing.
 	width, height int
 
@@ -894,6 +897,10 @@ func (p *Program) eventLoop(model Model, cmds chan Cmd) (Model, error) {
 func (p *Program) render(model Model) {
 	if p.renderer != nil {
 		p.renderer.render(model.View()) // send view to renderer
+		select {
+		case p.renderWake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -1415,16 +1422,33 @@ func (p *Program) startRenderer() {
 
 	// Start the renderer.
 	p.renderer.start()
+	if p.renderWake == nil {
+		p.renderWake = make(chan struct{}, 1)
+	}
 	go func() {
+		idle := 0
+		stopped := false
 		for {
 			select {
 			case <-p.rendererDone:
 				p.ticker.Stop()
 				return
 
+			case <-p.renderWake:
+				idle = 0
+				if stopped {
+					p.ticker.Reset(framerate)
+					stopped = false
+				}
+
 			case <-p.ticker.C:
 				_ = p.flush()
 				_ = p.renderer.flush(false)
+				idle++
+				if idle >= idleFrames {
+					p.ticker.Stop()
+					stopped = true
+				}
 			}
 		}
 	}()

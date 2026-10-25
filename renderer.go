@@ -11,6 +11,9 @@ const (
 	// defaultFramerate specifies the maximum interval at which we should
 	// update the view.
 	defaultFPS = 60
+
+	// idleFrames is how many unchanged frames pass before the ticker stops
+	idleFrames = 2
 	maxFPS     = 120
 )
 
