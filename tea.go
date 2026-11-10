@@ -79,6 +79,16 @@ func NewView(s string) View {
 	return view
 }
 
+// FrameWriter writes a frame's screen content straight to the terminal. It may
+// emit only what changed since its last write; Invalidate tells it the screen
+// was erased, so the next write must cover every cell. Both are called from
+// the renderer goroutine, so the frame must not be mutated after it is handed
+// to a View.
+type FrameWriter interface {
+	WriteFrame(w io.Writer) error
+	Invalidate()
+}
+
 // View represents a terminal view that can be composed of multiple layers.
 // It can also contain a cursor that will be rendered on top of the layers.
 type View struct {
@@ -94,6 +104,12 @@ type View struct {
 	//  v := tea.NewView("Hello, World!")
 	//  ```
 	Content string
+
+	// Frame, when set, replaces Content: the renderer skips its own cell
+	// buffer and diff, and the FrameWriter writes the screen content itself.
+	// Cursor, modes, and synchronized output are still handled by the
+	// renderer.
+	Frame FrameWriter
 
 	// OnMouse is an optional mouse message handler that can be used to
 	// intercept mouse messages that depends on view content from last render.

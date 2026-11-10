@@ -299,13 +299,13 @@ func (s *cursedRenderer) flush(closing bool) error {
 
 	view := s.view
 	frameArea := uv.Rect(0, 0, s.width, s.height)
-	if len(view.Content) == 0 {
+	if len(view.Content) == 0 && view.Frame == nil {
 		// If the component is nil, we should clear the screen buffer.
 		frameArea.Max.Y = 0
 	}
 
 	content := uv.NewStyledString(view.Content)
-	if !view.AltScreen {
+	if !view.AltScreen && view.Frame == nil {
 		// We need to resizes the screen based on the frame height and
 		// terminal width. This is because the frame height can change based on
 		// the content of the frame. For example, if the frame contains a list
@@ -328,6 +328,11 @@ func (s *cursedRenderer) flush(closing bool) error {
 		return nil
 	}
 
+	// A frame writer diffs against what it last wrote, which is only valid
+	// while nothing else has touched the screen.
+	invalid := s.starting || s.pendingErase || s.lastView == nil ||
+		s.lastView.Frame == nil || frameArea != s.cellbuf.Bounds()
+
 	// We're no longer starting.
 	s.starting = false
 	s.pendingErase = false
@@ -347,8 +352,10 @@ func (s *cursedRenderer) flush(closing bool) error {
 
 	// Clear our screen buffer before copying the new frame into it to ensure
 	// we erase any old content.
-	s.cellbuf.Clear()
-	content.Draw(s.cellbuf, s.cellbuf.Bounds())
+	if view.Frame == nil {
+		s.cellbuf.Clear()
+		content.Draw(s.cellbuf, s.cellbuf.Bounds())
+	}
 
 	// If the frame height is greater than the screen height, we drop the
 	// lines from the top of the buffer.
@@ -522,13 +529,31 @@ func (s *cursedRenderer) flush(closing bool) error {
 	}
 
 	// Render and queue changes to the screen buffer.
-	s.scr.Render(s.cellbuf.RenderBuffer)
+	if view.Frame != nil {
+		if invalid {
+			_, _ = s.scr.WriteString(ansi.EraseEntireScreen)
+			view.Frame.Invalidate()
+		}
+		if err := view.Frame.WriteFrame(s.scr); err != nil {
+			return fmt.Errorf("bubbletea: error writing frame: %w", err)
+		}
+		if cur := view.Cursor; cur != nil {
+			// The frame writer leaves the cursor wherever it stopped, so
+			// position it absolutely rather than trusting the cursor model.
+			_, _ = s.scr.WriteString(ansi.CursorPosition(cur.X+1, cur.Y+1))
+			s.scr.SetPosition(cur.X, cur.Y)
+		} else {
+			s.scr.SetPosition(-1, -1)
+		}
+	} else {
+		s.scr.Render(s.cellbuf.RenderBuffer)
+	}
 
-	if cur := view.Cursor; cur != nil {
+	if cur := view.Cursor; cur != nil && view.Frame == nil {
 		// MoveTo must come after [uv.TerminalRenderer.Render] because the
 		// cursor position might get updated during rendering.
 		s.scr.MoveTo(view.Cursor.X, view.Cursor.Y)
-	} else if !view.AltScreen {
+	} else if !view.AltScreen && view.Frame == nil {
 		// We don't want the cursor to be dangling at the end of the line in
 		// inline mode because it can cause unwanted line wraps in some
 		// terminals. So we move it to the beginning of the next line if
@@ -893,6 +918,7 @@ func viewEquals(a, b *View) bool {
 	}
 
 	if a.Content != b.Content ||
+		a.Frame != b.Frame ||
 		a.AltScreen != b.AltScreen ||
 		a.DisableBracketedPasteMode != b.DisableBracketedPasteMode ||
 		a.ReportFocus != b.ReportFocus ||
